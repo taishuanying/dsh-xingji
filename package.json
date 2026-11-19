@@ -1,0 +1,24 @@
+{
+  "name": "dsh-xingji",
+  "version": "0.1.0",
+  "description": "星迹：重开对话自动把上一段收进星图，开局自动把记忆带回来，15 天自动淡忘。",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

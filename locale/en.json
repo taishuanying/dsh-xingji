@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Xingji",
+    "description": "Files the previous conversation into the memory map on every restart, brings the memory back at the start of a new session, and fades unimportant memories older than 15 days.",
+    "detail": "docs/DETAIL.md"
+  }
+}

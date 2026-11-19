@@ -108,6 +108,24 @@ console.log('  重置备份归档:', JSON.stringify(r重置))
 const r重置2 = 插件.归档一轮(配置)
 断言('重置备份不重复归档', r重置2.新增 === 0, '实际 ' + r重置2.新增)
 
+// 群里那份备份也要过「和她有关」的过滤（2026-11-20 实测踩过：整屏 Warframe 灌进日记）
+writeFileSync(备份路, JSON.stringify({
+  'group:971157044': {
+    at: 现在 + 30000,
+    messages: [
+      { isSelf: false, sender: '群友甲', text: '@taishu鱼鱼 在吗' },
+      { isSelf: false, sender: '群友乙', text: '这游戏真难' },
+      { isSelf: true, sender: '我', text: '确实难' },
+    ],
+  },
+}, null, 2), 'utf8')
+const r群 = 插件.归档一轮(配置)
+const 日记群 = readFileSync(join(日记夹, 日 + '.md'), 'utf8')
+console.log('  群备份归档:', JSON.stringify(r群))
+断言('重置备份里 @她的记了', 日记群.includes('@taishu鱼鱼 在吗'))
+断言('重置备份里无关闲聊没记', !日记群.includes('这游戏真难'))
+断言('重置备份里她自己说的记了', 日记群.includes('我：确实难'))
+
 // ── 2. 拆卡 ──
 console.log('\n[2] 拆记忆卡')
 const 卡 = `# 记忆卡

@@ -210,7 +210,12 @@ function 归档重置备份(配置, 日记夹, 水位们) {
     const 标记 = 'reset:' + key
     if (水位们[标记] === rec.at) continue // 这段已经归档过
     const 行们 = []
+    const 只记相关 = 配置.群聊只记相关 !== false
+    const 是群 = String(key).startsWith('group:')
     for (const m of rec.messages) {
+      // ⚠ 这里也要过一遍「和她有关」：桥接存的是全量 24 条（包括群友闲聊），
+      //   不筛的话重置一次就把整屏 Warframe 聊天灌进日记（2026-11-20 实测踩过）。
+      if (只记相关 && 是群 && !和她有关(key, m, 配置)) continue
       const 行 = 造一行(key, m)
       if (行) 行们.push(行)
     }

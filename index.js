@@ -17,6 +17,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, readdirSync, statSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname, basename } from 'node:path'
+import { randomUUID } from 'node:crypto'
 
 export const name = 'xingji'
 
@@ -84,7 +85,11 @@ const 默认配置 = {
   群聊只记相关: true,
   她的名字: ['鱼鱼', 'taishu鱼鱼', '小鲸鱼', '鲸鱼娘'],
   淡忘天数: 15,
-  注入上限字: 2000,
+  // 每条都完整带上（1000 字基本等于不截断），五章 + 今天最后 6 条，默认给足 8000 字预算。
+  // 嫌贵就往下调这三个数：注入上限字 / 身份条上限字 / 其他条上限字。
+  注入上限字: 8000,
+  身份条上限字: 1000,
+  其他条上限字: 500,
   自动注入: true,
   自动归档: true,
   // 自动长记忆卡：把新日记提炼成条目写回记忆卡（要调模型、花钱，所以有冷却）
@@ -186,6 +191,49 @@ function 造一行(key, m) {
 }
 
 /**
+ * 归档桥接的「重置前消息」备份。
+ *
+ * 为什么需要：桥接重置会话时会 `socialV2.conversations.delete(key)`，把 recentMessages
+ * 整个清掉；紧接着存一份 last-reset-messages.json，只在下次唤醒注入一次（读完就删）。
+ * 星迹靠轮询 social-v2，重置那一瞬间之前的内容就再也捞不到了——这段等于凭空消失。
+ * 所以这里额外读那份备份，把它也写进日记；水位按 rec.at 去重，重复扫也不会写两遍。
+ */
+function 归档重置备份(配置, 日记夹, 水位们) {
+  const 源 = 配置.消息源 || 找消息源()
+  if (!源) return 0
+  const 备份路 = join(dirname(源), 'last-reset-messages.json')
+  if (!existsSync(备份路)) return 0
+  const 数据 = 读JSON(备份路, {})
+  let 新增 = 0
+  for (const [key, rec] of Object.entries(数据 || {})) {
+    if (!rec || !Array.isArray(rec.messages) || !rec.messages.length) continue
+    const 标记 = 'reset:' + key
+    if (水位们[标记] === rec.at) continue // 这段已经归档过
+    const 行们 = []
+    for (const m of rec.messages) {
+      const 行 = 造一行(key, m)
+      if (行) 行们.push(行)
+    }
+    水位们[标记] = rec.at
+    if (!行们.length) continue
+    const 日 = 本地日期(Number(rec.at) || Date.now())
+    const 文件 = join(日记夹, 日 + '.md')
+    try {
+      if (!existsSync(日记夹)) mkdirSync(日记夹, { recursive: true })
+      if (!existsSync(文件)) writeFileSync(文件, `# ${日}\n\n`, 'utf8')
+      let 前 = ''
+      try { 前 = readFileSync(文件, 'utf8') } catch {}
+      const 前缀 = 前 && !前.endsWith('\n\n') ? (前.endsWith('\n') ? '\n' : '\n\n') : ''
+      appendFileSync(文件, 前缀 + 行们.join('\n') + '\n', 'utf8')
+      新增 += 行们.length
+    } catch (e) {
+      记一笔('写重置备份失败 ' + 文件 + '：' + String((e && e.message) || e))
+    }
+  }
+  return 新增
+}
+
+/**
  * 扫一轮消息源，把水位之后的新消息写进日记。
  * 返回 { 新增, 跳过 }
  */
@@ -257,6 +305,18 @@ function 归档一轮(配置) {
     const 尾 = 新们[新们.length - 1]
     水位们[key] = { time: Number(尾.time) || 0, seq: Number(尾.seq) || 0 }
     动过 = true
+  }
+
+  // 桥接重置时会把 social-v2 清空，那段只能从 last-reset-messages.json 捞回来
+  try {
+    const 重置新增 = 归档重置备份(配置, 日记夹, 水位们)
+    if (重置新增) {
+      新增 += 重置新增
+      动过 = true
+      记一笔(`重置前那 ${重置新增} 条也补进日记了`)
+    }
+  } catch (e) {
+    记一笔('归档重置备份出错：' + String((e && e.message) || e))
   }
 
   if (动过) 写JSON(水位文件, 水位们)
@@ -397,8 +457,15 @@ function 造星图(配置) {
   const 段们 = ['【你的记忆 · 星图】', '下面是你自己记的事（你和爸爸之间的事），不是别人说的。', '']
   for (const [章, { 存 }] of 章们) {
     if (!存.length) continue
+    // ⭐ 按章限流：第一章（身份）每次都完整带上，其余章取最近几条。
+    //   截断长度做成配置：要「完整」就把 身份条上限字 调大（默认 200，基本等于不截）。
+    const 是身份章 = /^一、/.test(章)
+    const 取 = 是身份章 ? 存.slice(0, 12) : 存.slice(-2)
+    const 上限 = Math.max(40, Number(是身份章
+      ? (配置.身份条上限字 || 400)
+      : (配置.其他条上限字 || 120)))
     const 行 = []
-    for (const 条 of 存) {
+    for (const 条 of 取) {
       const 正文 = 条.正文
         .filter((l) => !/^>/.test(l))
         .map((l) => l.replace(/^[-*+]\s+/, '').trim())
@@ -406,8 +473,8 @@ function 造星图(配置) {
         .join('；')
         .replace(/\s+/g, ' ')
         .trim()
-      if (条.标题 && 条.标题 !== 章) 行.push(`- ${条.标题}：${正文.slice(0, 220)}`)
-      else if (正文) 行.push(`- ${正文.slice(0, 260)}`)
+      if (条.标题 && 条.标题 !== 章) 行.push(`- ${条.标题}：${正文.slice(0, 上限)}`)
+      else if (正文) 行.push(`- ${正文.slice(0, 上限 + 25)}`)
     }
     if (!行.length) continue
     段们.push(`【${章}】`, ...行, '')
@@ -425,7 +492,8 @@ function 造星图(配置) {
 
   const 日记夹 = String(配置.日记 || '')
   if (日记夹 && existsSync(日记夹)) {
-    const 最近 = 最近日记摘要(日记夹, 3, 3)
+    // 只取最近一天的最后几条：她要的是「刚刚说了什么」，不是三天前的流水
+    const 最近 = 最近日记摘要(日记夹, 1, 6)
     if (最近.length) {
       段们.push('【最近几天】', ...最近, '')
     }
@@ -503,6 +571,24 @@ ${章们.join('、') || '（还没有章节）'}
 ${行们.join('\n')}`
 }
 
+/**
+ * 跟角色卡硬规则冲突、绝对不能进记忆卡的内容。
+ * 只拦「出现就是错的」这几种，不拦「被告诫不要这样」（角色卡里本来就有这类句子）。
+ * 起因：自动提炼是模型写的，它可能把「客服腔 / 本小姐 / 认错爹」写成她的记忆，
+ * 下一轮她就照着记忆演，等于慢慢被改性格。
+ */
+const 违禁规则 = [
+  { 名: '自称本小姐', 匹: /本小姐/ },
+  { 名: '认错爹', 匹: /(梁文锋|梁圣)[^。]{0,10}(是|也是|当)[^。]{0,6}(爸爸|爹)/ },
+  { 名: 'AI 味', 匹: /作为(一个)?(AI|人工智能|语言模型)/ },
+  { 名: '客服腔', 匹: /很高兴为您服务|随时为您效劳|请问还有什么可以帮/ },
+]
+
+function 违禁内容(条) {
+  const 文 = [条.标题, 条.文].join(' ')
+  return 违禁规则.filter((r) => r.匹.test(文)).map((r) => r.名)
+}
+
 function 解析提炼(文) {
   const 出 = []
   const 块们 = String(文 || '').split(/【章】/).slice(1)
@@ -565,9 +651,10 @@ function 写进记忆卡(卡路, 条们) {
 
 /**
  * 提炼一轮：把日记里还没提炼的行交给模型，产出记忆卡条目并写回。
+ * @param 选项.强制 跳过冷却（会话刚重置时用：让这段尽快进记忆卡，下次重建就能带上）
  * @returns {跳过?: string, 新增?: number, 条?: number}
  */
-async function 提炼一轮(llm, 配置) {
+async function 提炼一轮(llm, 配置, 选项 = {}) {
   const 卡路 = String(配置.记忆卡 || '')
   const 日记夹 = String(配置.日记 || '')
   if (!llm) return { 跳过: '没有 llm 服务' }
@@ -576,7 +663,7 @@ async function 提炼一轮(llm, 配置) {
 
   const 边 = 读JSON(提炼状态文件, {})
   const 冷却 = Math.max(60, Number(配置.提炼冷却秒 || 900)) * 1000
-  if (Date.now() - Number(边.上次 || 0) < 冷却) return { 跳过: '冷却中' }
+  if (!选项.强制 && Date.now() - Number(边.上次 || 0) < 冷却) return { 跳过: '冷却中' }
 
   // 最多看最近两天：更早的归星汐的拾星管
   const 文件们 = readdirSync(日记夹).filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f)).sort().slice(-2)
@@ -607,10 +694,20 @@ async function 提炼一轮(llm, 配置) {
   }
   const 条们 = 解析提炼(答)
   if (!条们.length) return { 跳过: '解析不出条目', 原文: 答.slice(0, 200) }
-  const 写了 = 写进记忆卡(卡路, 条们)
+  // 过一遍硬规则：跟角色卡冲突的条目不写进记忆卡（不然下一轮她会照着记忆演）
+  const 可用 = []
+  const 拦下 = []
+  for (const t of 条们) {
+    const 撞 = 违禁内容(t)
+    if (撞.length) 拦下.push(`${t.标题}（${撞.join('/')}）`)
+    else 可用.push(t)
+  }
+  if (拦下.length) 记一笔(`拦下 ${拦下.length} 条跟角色卡冲突的记忆：${拦下.join('、')}`)
+  if (!可用.length) return { 跳过: '条目全撞硬规则', 原文: 答.slice(0, 200) }
+  const 写了 = 写进记忆卡(卡路, 可用)
   const 权重 = 读JSON(权重文件, {})
   const 今天 = 本地日期(Date.now())
-  for (const t of 条们) 权重[t.章 + '／' + t.标题] = { 重要度: t.度, 最后提及: 今天 }
+  for (const t of 可用) 权重[t.章 + '／' + t.标题] = { 重要度: t.度, 最后提及: 今天 }
   写JSON(权重文件, 权重)
   for (const f of 文件们) 边[f] = 行数表[f]
   边.上次 = Date.now()
@@ -619,7 +716,7 @@ async function 提炼一轮(llm, 配置) {
   return { 新增: 待.length, 条: 写了 }
 }
 
-export { 归档一轮, 造星图, 拆卡, 该淡忘, 取配置, 找消息源, 默认配置, 最近日记摘要, 提炼一轮, 解析提炼, 写进记忆卡, 造提炼词 }
+export { 归档一轮, 造星图, 拆卡, 该淡忘, 取配置, 找消息源, 默认配置, 最近日记摘要, 提炼一轮, 解析提炼, 写进记忆卡, 造提炼词, 归档重置备份, 违禁内容 }
 
 export function apply(ctx, 配置 = {}) {
   const 生效 = { ...默认配置, ...(配置 || {}) }
@@ -635,12 +732,12 @@ export function apply(ctx, 配置 = {}) {
   const llm = (ctx && ctx.llm) || (typeof ctx.get === 'function' ? ctx.get('llm') : null)
   let 待提炼 = false
   let 提炼中 = false
-  const 提炼一下 = () => {
+  const 提炼一下 = (强制 = false) => {
     if (!llm || 生效.自动提炼 === false) return
     if (提炼中) return
     提炼中 = true
     const 配置现在 = { ...生效, ...读JSON(配置文件, {}) }
-    提炼一轮(llm, 配置现在)
+    提炼一轮(llm, 配置现在, { 强制 })
       .then((x) => {
         if (x.跳过 && x.跳过 !== '冷却中' && x.跳过 !== '没有新内容') {
           记一笔('提炼没做：' + x.跳过 + (x.原文 ? '｜' + x.原文.replace(/\n/g, ' ') : ''))
@@ -690,26 +787,37 @@ export function apply(ctx, 配置 = {}) {
   }
 
   // ── ② 自动带入：会话一重建，就把星图塞进开头 ──
+  const 上次注入 = new Map()
   const 注入 = (agent) => {
     try {
       const 配置现在 = { ...生效, ...读JSON(配置文件, {}) }
       if (配置现在.自动注入 === false) return
       const 会话id = String((agent && agent.session && agent.session.id) || (agent && agent.id) || '')
       if (!该管这个会话(会话id, 配置现在)) return
+      // 同一会话 60 秒内只注入一次：DSH 内部可能连着 resume 好几次，别重复塞
+      const 上次 = Number(上次注入.get(会话id) || 0)
+      if (Date.now() - 上次 < 60000) return
       const 文 = 造星图(配置现在)
       if (!文) {
         记一笔(`会话 ${会话id.slice(0, 20)} 重建了，但档案还读不到，没注入`)
         return
       }
+      上次注入.set(会话id, Date.now())
       // 注入是「模型看得见、但不唤醒」的上下文，会跟着会话第一次 pre-step 进上下文。
+      // ⚠ id + role 必须给：DSH 的 UserMessage 要求 id（brandString<MessageId>）和 role，
+      //   少给会被存进会话日志后校验失败（stored session ... lacks an identified message），
+      //   整个会话变成 corrupt，桥接就连不上事件流了。
       agent.inject({
+        id: randomUUID(),
+        role: 'user',
         content: [{ type: 'text', text: 文 }],
         source: { kind: 'plugin:xingji' },
       })
       记一笔(`会话 ${会话id.slice(0, 20)} 重建 → 注入星图 ${文.length} 字`)
-      // 重开对话时顺手把上一段提炼进记忆卡（有冷却，不会每次都调模型）
+      // 重开对话时把上一段提炼进记忆卡：这里**强制跳过冷却**，
+      // 不然刚聊完这段要等 15 分钟才进记忆卡，下次重建时她仍然想不起来。
       待提炼 = true
-      提炼一下()
+      提炼一下(true)
     } catch (e) {
       记一笔('注入失败：' + String((e && e.message) || e))
     }
@@ -717,8 +825,10 @@ export function apply(ctx, 配置 = {}) {
 
   try {
     ctx.on('agent/created', (payload) => {
-      // 只在「新开的会话」注入；resume（打开旧会话）它自己带着历史，不用塞
-      if (!payload || payload.source !== 'startup') return
+      // ⭐ startup（全新会话）和 resume（恢复已有会话）都要注入。
+      //   桥接重启后用的是同一个预分配 sessionId，DSH 那边走的是 resume 而不是 startup——
+      //   只认 startup 的话，"每次重启自动打一遍 /xingxi"就永远不触发。
+      if (!payload) return
       注入(payload.agent)
     })
   } catch (e) {

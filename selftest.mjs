@@ -89,6 +89,25 @@ const r3 = 插件.归档一轮(配置)
 console.log('  第四轮:', JSON.stringify(r3))
 断言('增量消息能捞到', r3.新增 === 1 && readFileSync(join(日记夹, 日 + '.md'), 'utf8').includes('第三条新的'))
 
+// ── 1.5 重置前消息备份 ──
+console.log('\n[1.5] 重置前消息备份')
+const 备份路 = join(临时, 'last-reset-messages.json')
+writeFileSync(备份路, JSON.stringify({
+  'private:2750223479': {
+    at: 现在 + 20000,
+    messages: [
+      { isSelf: false, sender: '主人', text: '重置前说的最后一句话' },
+      { isSelf: true, sender: '我', text: '知道了' },
+    ],
+  },
+}, null, 2), 'utf8')
+const r重置 = 插件.归档一轮(配置)
+const 日记重置 = readFileSync(join(日记夹, 日 + '.md'), 'utf8')
+console.log('  重置备份归档:', JSON.stringify(r重置))
+断言('重置前的消息也补进日记了', r重置.新增 === 2 && 日记重置.includes('重置前说的最后一句话'), '实际新增 ' + r重置.新增)
+const r重置2 = 插件.归档一轮(配置)
+断言('重置备份不重复归档', r重置2.新增 === 0, '实际 ' + r重置2.新增)
+
 // ── 2. 拆卡 ──
 console.log('\n[2] 拆记忆卡')
 const 卡 = `# 记忆卡

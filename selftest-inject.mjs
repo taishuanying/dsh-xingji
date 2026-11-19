@@ -63,10 +63,15 @@ console.log('\n注入内容:\n' + (注入们[0] ? 注入们[0].content[0].text.s
 断言('注入内容带最近日记', !!注入们[0] && 注入们[0].content[0].text.includes('今天早点睡'))
 断言('注入来源标成 plugin:xingji', !!注入们[0] && 注入们[0].source && 注入们[0].source.kind === 'plugin:xingji')
 
-// resume 不该重复注入
+// resume 也要注入（桥接重启后走的就是 resume）
 注入们.length = 0
-监听['agent/created']({ agent, source: 'resume' })
-断言('resume 不重复注入', 注入们.length === 0)
+监听['agent/created']({ agent: { session: { id: 'qqb-p-2750223479-resumed' }, inject(m) { 注入们.push(m) } }, source: 'resume' })
+断言('resume 也注入星图', 注入们.length === 1, '实际 ' + 注入们.length)
+
+// 同一个会话 60 秒内不重复注入
+注入们.length = 0
+监听['agent/created']({ agent: { session: { id: 'qqb-p-2750223479-resumed' }, inject(m) { 注入们.push(m) } }, source: 'resume' })
+断言('同一会话 60 秒内不重复注入', 注入们.length === 0, '实际 ' + 注入们.length)
 
 // 不是 qqb- 的会话不该注入
 注入们.length = 0
